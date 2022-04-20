@@ -33,6 +33,8 @@ title: authz-casdoor
 | client_id | string | required    |         |       | The client id in casdoor.                          |
 | client_secret       | string | required    |         |       | The client secret in casdoor.               |
 | callback_url      | string | required    |         |       | The callback url which is used to receive state and code.                            |
+| set_id_token_header| boolean | optional    | true                  |         | Whether to ensure the ID token, if available, is set in the `X-ID-Token` request header.                                        |
+| set_userinfo_header | boolean | optional    | true                  |         | Whether to ensure the UserInfo object, if available, is set in the `X-Userinfo` request header.   
 
 *Note: endpoint_addr and callback_url should not end with '/'*
 
