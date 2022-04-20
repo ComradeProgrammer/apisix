@@ -39,6 +39,8 @@ The `authz-casdoor` Plugin can be used to add centralized authentication with [C
 | client_id     | string | True     | Client ID in Casdoor.                        |
 | client_secret | string | True     | Client secret in Casdoor.                    |
 | callback_url  | string | True     | Callback URL used to receive state and code. |
+|set_id_token_header|boolean|False|Whether to ensure the ID token, if available, is set in the `X-ID-Token` request header.|
+| set_userinfo_header | boolean | False | Whether to ensure the UserInfo object, if available, is set in the `X-Userinfo` request header. |
 
 :::info IMPORTANT
 

@@ -17,7 +17,9 @@
 local core = require("apisix.core")
 local http = require("resty.http")
 local session = require("resty.session")
+local openidc = require("resty.openidc")
 local ngx = ngx
+local ngx_encode_base64 = ngx.encode_base64
 local rand = math.random
 local tostring = tostring
 
@@ -30,7 +32,10 @@ local schema = {
         endpoint_addr = {type = "string", pattern = "^[^%?]+[^/]$"},
         client_id = {type = "string"},
         client_secret = {type = "string"},
-        callback_url = {type = "string", pattern = "^[^%?]+[^/]$"}
+        callback_url = {type = "string", pattern = "^[^%?]+[^/]$"},
+        set_userinfo_header = { type = "boolean", default = true },
+        set_id_token_header = { type = "boolean", default = true }
+
     },
     required = {
         "callback_url", "endpoint_addr", "client_id", "client_secret"
@@ -44,7 +49,8 @@ local _M = {
     schema = schema
 }
 
-local function fetch_access_token(code, conf)
+
+local function fetch_access_token(ctx,code, conf)
     local client = http.new()
     local url = conf.endpoint_addr .. "/api/login/oauth/access_token"
     local res, err = client:request_uri(url, {
@@ -61,25 +67,37 @@ local function fetch_access_token(code, conf)
     })
 
     if not res then
-        return nil, nil, err
+        return nil, nil, nil, err
     end
     local data, err = core.json.decode(res.body)
 
     if err or not data then
         err = "failed to parse casdoor response data: " .. err .. ", body: " .. res.body
-        return nil, nil, err
+        return nil, nil, nil, err
     end
 
     if not data.access_token then
-        return nil, nil,
+        return nil, nil, nil,
                "failed when accessing token: no access_token contained"
     end
     -- In the reply of casdoor, setting expires_in to 0 indicates that the access_token is invalid.
     if not data.expires_in or data.expires_in == 0 then
-        return nil, nil, "failed when accessing token: invalid access_token"
+        return nil, nil, nil, "failed when accessing token: invalid access_token"
     end
 
-    return data.access_token, data.expires_in, nil
+    local opts={
+        discovery = conf.endpoint_addr.. "/.well-known/openid-configuration",
+        client_id=conf.client_id,
+        client_secret=conf.client_secret
+    }
+    core.request.set_header(ctx,"Authorization","Bearer "..data.access_token)
+    local token_info, err =openidc.introspect(opts)
+    if err or not token_info then
+        err = "failed to introspect casdoor access token: " .. err
+        return nil, nil, nil, err
+    end
+
+    return data.access_token, data.expires_in, token_info, nil
 end
 
 
@@ -88,7 +106,7 @@ function _M.check_schema(conf)
 end
 
 
-function _M.access(conf, ctx)
+function _M.rewrite(conf, ctx)
     local current_uri = ctx.var.uri
     local session_obj_read, session_present = session.open()
     -- step 1: check whether hits the callback
@@ -126,8 +144,7 @@ function _M.access(conf, ctx)
             core.log.error(err)
             return 400, err
         end
-        local access_token, lifetime, err =
-            fetch_access_token(args.code, conf)
+        local access_token, lifetime, token_info, err = fetch_access_token(ctx,args.code, conf)
         if not access_token then
             core.log.error(err)
             return 503
@@ -143,6 +160,7 @@ function _M.access(conf, ctx)
         }
         session_obj_write:start()
         session_obj_write.data.access_token = access_token
+        session_obj_write.data.token_info = token_info
         session_obj_write:save()
         core.response.set_header("Location", original_url)
         return 302
@@ -166,6 +184,15 @@ function _M.access(conf, ctx)
         })
         core.response.set_header("Location", redirect_url)
         return 302
+    end
+
+    --step3 modify the header if necessary
+    if session_obj_read.data.token_info and conf.set_userinfo_header then
+        core.request.set_header(ctx, "X-Userinfo",ngx_encode_base64(core.json.encode(session_obj_read.data.token_info)))
+    end
+    if session_obj_read.data.access_token and conf.set_id_token_header then
+        local token = core.json.encode(session_obj_read.data.access_token)
+        core.request.set_header(ctx, "X-ID-Token", ngx.encode_base64(token))
     end
 
 end
